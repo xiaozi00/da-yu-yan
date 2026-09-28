@@ -1,0 +1,44 @@
+# ============================================================
+#  WorkBuddy / AI 助手工作目录
+#  内含私人记忆笔记与调试产物，不纳入版本管理
+# ============================================================
+.workbuddy/
+
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------------- 构建产物 ----------------
+dist/
+build/
+*.tmp
+*.bak
+
+# ---------------- 本地环境与密钥（切勿提交）----------------
+.env
+.env.*
+*.local
+*.key
+secrets.json
+credentials.*
+
+# ---------------- 编辑器 / 操作系统 ----------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------- 日志 ----------------
+*.log

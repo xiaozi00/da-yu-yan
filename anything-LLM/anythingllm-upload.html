@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AnythingLLM 文档上传</title>
+<style>
+  body{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;background:#1a1a1c;color:#e6e6e6;
+       max-width:720px;margin:40px auto;padding:0 20px}
+  h1{font-size:18px;margin:0 0 4px}
+  p.sub{color:#8a8a92;margin:0 0 24px;font-size:13px}
+  .row{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+  label{width:88px;color:#a8a8b0;flex:none}
+  input,select{flex:1;background:#26262a;border:1px solid #3a3a40;color:#e6e6e6;
+       border-radius:6px;padding:8px 10px;font:inherit;outline:none}
+  input:focus,select:focus{border-color:#4d7cfe}
+  button{background:#4d7cfe;border:0;color:#fff;border-radius:6px;padding:10px 20px;
+       font:inherit;cursor:pointer}
+  button:disabled{background:#3a3a40;color:#77777f;cursor:default}
+  pre{background:#141416;border:1px solid #2c2c31;border-radius:6px;padding:14px;
+       white-space:pre-wrap;word-break:break-all;min-height:120px;margin:18px 0 0;font-size:13px}
+  .ok{color:#4ade80}.err{color:#f87171}
+</style>
+</head>
+<body>
+<h1>AnythingLLM 文档上传</h1>
+<p class="sub">POST /api/v1/document/upload → 上传到工作区并完成向量化嵌入</p>
+
+<div class="row"><label>API Key</label>
+  <input id="key" type="password" value="" placeholder="粘贴你的 AnythingLLM API Key（仅保存在本机浏览器）"></div>
+<div class="row"><label>工作区</label><select id="ws"></select></div>
+<div class="row"><label>选择文档</label><input type="file" id="file" multiple></div>
+<div class="row"><label></label><button id="btn">上传并向量化</button></div>
+<pre id="log">就绪。</pre>
+
+<script>
+const BASE = 'http://localhost:3001/api/v1';
+const $ = id => document.getElementById(id);
+const log = (msg, cls) => { $('log').innerHTML += `\n<span class="${cls||''}">${msg}</span>`; };
+$('log').textContent = '就绪。';
+
+let slug = '';
+
+async function loadWorkspaces() {
+  const r = await fetch(`${BASE}/workspaces`, { headers: { Authorization: `Bearer ${$('key').value}` } });
+  const { workspaces } = await r.json();
+  $('ws').innerHTML = workspaces.map(w => `<option value="${w.slug}">${w.name}</option>`).join('');
+  slug = workspaces[0]?.slug || '';           // 默认第一个工作区
+}
+
+async function upload() {
+  const files = $('file').files;
+  if (!files.length) return log('请先选择文档。', 'err');
+  const btn = $('btn'); btn.disabled = true;
+  const headers = { Authorization: `Bearer ${$('key').value}` };
+
+  for (const f of files) {
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('addToWorkspaces', slug);        // 上传即加入工作区
+    log(`→ 上传 ${f.name} ...`);
+    try {
+      const res = await fetch(`${BASE}/document/upload`, { method: 'POST', headers, body: fd });
+      const data = await res.json();
+      if (data.success) log(`  ✓ ${f.name} 上传成功（${data.documents[0].wordCount} 词）`, 'ok');
+      else log(`  ✗ ${f.name} 失败：${data.error}`, 'err');
+    } catch (e) { log(`  ✗ ${f.name} 请求异常：${e.message}`, 'err'); }
+  }
+
+  log('→ 触发向量化嵌入 ...');
+  try {
+    const res = await fetch(`${BASE}/workspace/${slug}/update-embeddings`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adds: [], deletes: [] })
+    });
+    const data = await res.json();
+    const docs = data.workspace?.documents || [];
+    log(`  ✓ 向量化完成，工作区现有文档 ${docs.length} 个：`, 'ok');
+    docs.forEach(d => log(`    · ${JSON.parse(d.metadata).title}`));
+  } catch (e) { log(`  ✗ 向量化异常：${e.message}`, 'err'); }
+
+  btn.disabled = false;
+}
+
+$('btn').onclick = upload;
+
+// API Key 只存在浏览器本地（localStorage），不写进页面源码
+const KEY_STORE = 'anythingllm_api_key';
+const savedKey = localStorage.getItem(KEY_STORE);
+if (savedKey) {
+  $('key').value = savedKey;
+  loadWorkspaces().catch(e => log('无法连接 AnythingLLM：' + e.message, 'err'));
+}
+$('key').onchange = () => {
+  localStorage.setItem(KEY_STORE, $('key').value.trim());
+  loadWorkspaces().catch(e => log('无法连接 AnythingLLM：' + e.message, 'err'));
+};
+</script>
+</body>
+</html>
