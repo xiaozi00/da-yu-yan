@@ -31,6 +31,7 @@ build/
 *.key
 secrets.json
 credentials.*
+config.ini
 
 # ---------------- 编辑器 / 操作系统 ----------------
 .vscode/
