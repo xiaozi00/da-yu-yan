@@ -1,0 +1,120 @@
+%% ============================================================
+%% chat-stream-tool-file.py  代码架构图
+%% 一个带工具调用（Function Calling）的流式命令行 LLM 代理
+%% ============================================================
+flowchart TB
+
+    subgraph BOOT["① 启动与配置层"]
+        CFG["config.ini<br/>[llm] base_url / api_key / model"]
+        PARSER["configparser.ConfigParser<br/>read(encoding='utf-8')"]
+        CLIENT["OpenAI 客户端<br/>client = OpenAI(base_url, api_key)"]
+        CFG --> PARSER --> CLIENT
+    end
+
+    subgraph SCHEMA["② 工具声明层 tools[]"]
+        direction LR
+        T_DATE["getDate"]
+        T_LEAP["isLeapYear"]
+        T_CWD["getCwd"]
+        T_LIST["listFiles"]
+        T_TYPE["getFileType"]
+        T_READ["readFile"]
+        T_CREATE["createFile"]
+        T_EDIT["editFile"]
+        T_MKDIR["createDirectory"]
+        T_RMDIR["deleteDirectory"]
+        T_DEL["deleteFile"]
+        T_RENAME["renamePath"]
+    end
+
+    subgraph IMPL["③ 工具实现层"]
+        direction TB
+        subgraph SYS["系统 / 计算类"]
+            F_DATE["get_date()<br/>subprocess 调 date /t &amp; time /t<br/>GBK 解码 + 空白归一"]
+            F_LEAP["闰年判断<br/>year%4==0 and (year%100!=0 or year%400==0)"]
+            F_CWD["get_cwd()<br/>os.getcwd()"]
+        end
+        subgraph GUARD["安全护栏（公共前置校验）"]
+            R1["resolve_in_workspace()<br/>路径必须落在 cwd 内，越界返回 None"]
+            R2["TEXT_EXTS 扩展名白名单<br/>.txt .md .py .json .ini ..."]
+            R3["MAX_READ_CHARS = 20000<br/>超长截断，防撑爆上下文"]
+            R4["非空目录 / 已存在目标 拒绝删除与覆盖"]
+        end
+        subgraph FILE["文件 / 目录类"]
+            F_LIST["list_files()"]
+            F_TYPE["get_file_type()"]
+            F_READ["read_file()"]
+            F_CREATE["create_file()"]
+            F_EDIT["edit_file()"]
+            F_MKDIR["create_directory()"]
+            F_RMDIR["delete_directory()"]
+            F_DEL["delete_file()"]
+            F_RENAME["rename_path()"]
+        end
+        GUARD -.->|"所有路径操作先过校验"| FILE
+    end
+
+    subgraph DISPATCH["④ 分发层 run_tool(name, arguments)"]
+        JSONP["json.loads(arguments)<br/>失败 → 返回非法 JSON 提示"]
+        ROUTER{"按 name 路由"}
+        JSONP --> ROUTER
+    end
+
+    subgraph STREAM["⑤ 单轮流式请求 stream_once(messages)"]
+        REQ["client.chat.completions.create<br/>model / messages / tools / stream=True"]
+        LOOP["for chunk in stream"]
+        D1["delta.content<br/>逐字 print(flush=True) 并拼接 content"]
+        D2["delta.tool_calls<br/>按 tc.index 分片累积 id / name / arguments"]
+        RET["return content, calls"]
+        REQ --> LOOP
+        LOOP --> D1
+        LOOP --> D2
+        D1 --> RET
+        D2 --> RET
+    end
+
+    subgraph MAIN["⑥ 主循环层（双层 while）"]
+        IN["input('please input your prompt')"]
+        APP_U["messages.append({role:'user', content})"]
+        CALL["content, calls = stream_once(messages)"]
+        JUDGE{"calls 为空？"}
+        APP_A["messages.append<br/>{role:'assistant', content}"]
+        APP_TC["messages.append<br/>{role:'assistant', content, tool_calls[...]}"]
+        EXEC["遍历 sorted(calls)<br/>output = run_tool(...)"]
+        LOG["打印 [tool] name(args) -&gt; 结果（超 200 字符截断显示）"]
+        APP_T["messages.append<br/>{role:'tool', tool_call_id, content}"]
+        IN --> APP_U --> CALL --> JUDGE
+        JUDGE -->|"是：模型直接作答，本轮结束"| APP_A
+        JUDGE -->|"否：模型请求调工具"| APP_TC --> EXEC --> LOG --> APP_T
+        APP_T -->|"内层循环：把结果回传模型继续推理"| CALL
+        APP_A -->|"外层循环：等待下一次用户输入"| IN
+    end
+
+    LLM(("远程 LLM 服务<br/>OpenAI 兼容接口"))
+    DISK[["本地文件系统<br/>（限当前工作目录）"]]
+
+    PARSER --> CLIENT
+    CLIENT -->|"tools 随请求下发"| STREAM
+    SCHEMA --> STREAM
+    CALL --> STREAM
+    STREAM -->|"HTTPS 流式 SSE"| LLM
+    LLM -->|"content 分片 / tool_calls 分片"| STREAM
+    ROUTER --> SYS
+    ROUTER --> FILE
+    SYS --> DISPATCH
+    FILE --> DISK
+    SYS --> DISK
+
+    classDef boot fill:#e8f0fe,stroke:#4a6fa5,color:#12263f
+    classDef schema fill:#fff4e0,stroke:#c9871b,color:#3d2a00
+    classDef impl fill:#eaf7ec,stroke:#3f8f4a,color:#12341a
+    classDef guard fill:#fdeaea,stroke:#c0392b,color:#4a1010
+    classDef flow fill:#f3eafc,stroke:#7a4fa5,color:#2a1340
+    classDef ext fill:#f0f0f0,stroke:#777,color:#222
+
+    class CFG,PARSER,CLIENT boot
+    class T_DATE,T_LEAP,T_CWD,T_LIST,T_TYPE,T_READ,T_CREATE,T_EDIT,T_MKDIR,T_RMDIR,T_DEL,T_RENAME schema
+    class F_DATE,F_LEAP,F_CWD,F_LIST,F_TYPE,F_READ,F_CREATE,F_EDIT,F_MKDIR,F_RMDIR,F_DEL,F_RENAME impl
+    class R1,R2,R3,R4 guard
+    class JSONP,ROUTER,REQ,LOOP,D1,D2,RET,IN,APP_U,CALL,JUDGE,APP_A,APP_TC,EXEC,LOG,APP_T flow
+    class LLM,DISK ext
