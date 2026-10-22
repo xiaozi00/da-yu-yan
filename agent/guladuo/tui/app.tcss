@@ -1,0 +1,137 @@
+Screen {
+    background: $background;
+}
+
+Header {
+    background: $panel;
+    color: $text;
+}
+
+/* ---------- 主体两栏 ---------- */
+
+#main {
+    height: 1fr;
+}
+
+#left {
+    width: 1fr;
+}
+
+#sidebar {
+    width: 36;
+    border-left: round $panel;
+    padding: 0 1;
+    background: $surface;
+}
+
+/* ---------- 顶部信息卡 ---------- */
+
+#infocard {
+    height: auto;
+    margin: 1 2 1 2;
+    padding: 0 1;
+    background: $surface;
+    border-left: thick $accent;
+}
+
+/* ---------- 对话区 ---------- */
+
+#transcript {
+    height: 1fr;
+    padding: 0 2;
+    scrollbar-gutter: stable;
+}
+
+MessageBubble {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    background: $surface;
+    border-left: thick $panel;
+}
+
+MessageBubble.role-user {
+    border-left: thick $warning;
+}
+
+MessageBubble.role-assistant {
+    border-left: thick $primary;
+}
+
+MessageBubble.role-system {
+    color: $text-muted;
+}
+
+MessageBubble.role-error {
+    border-left: thick $error;
+    color: $error;
+}
+
+/* ---------- 工具卡片 ---------- */
+
+ToolCard {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    background: $surface;
+    border-left: thick $success;
+}
+
+ToolCard.tool-running {
+    border-left: thick $warning;
+}
+
+ToolCard.tool-failed {
+    border-left: thick $error;
+}
+
+/* ---------- 输入框 / 状态条 ---------- */
+
+#prompt {
+    margin: 0 2 1 2;
+    border: tall $accent;
+}
+
+#prompt:focus {
+    border: tall $accent-lighten-1;
+}
+
+#status {
+    height: 1;
+    margin: 0 2;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}
+
+/* ---------- 底部快捷键条 ---------- */
+
+#footer-keys {
+    height: 1;
+    padding: 0 2;
+    background: $panel;
+    color: $text-muted;
+}
+
+/* ---------- 帮助弹窗 ---------- */
+
+HelpScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#help-dialog {
+    width: 66;
+    height: auto;
+    max-height: 84%;
+    padding: 1 2;
+    background: $surface;
+    border: round $accent;
+}
+
+#help-body {
+    width: 100%;
+    height: auto;
+}
