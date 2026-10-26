@@ -23,7 +23,11 @@ def create_agent(settings: Settings, llm: LLMClient | None = None) -> Agent:
     )
     return Agent(
         llm=client,
-        tools=build_default_registry(settings.workspace, settings.max_read_chars),
+        tools=build_default_registry(
+            settings.workspace,
+            max_read_chars=settings.max_read_chars,
+            search_api_key=settings.search_api_key,
+        ),
         conversation=Conversation(settings.system_prompt),
         tool_round_limit=settings.tool_round_limit,
     )

@@ -1,2 +1,3 @@
 openai>=1.30
 textual>=0.80
+trafilatura>=2.0

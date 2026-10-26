@@ -29,6 +29,7 @@ class Settings:
     max_read_chars: int = 20000
     tool_round_limit: int = 8
     request_timeout: float = 90.0
+    search_api_key: str = ""  # 千帆 AI 搜索，留空则 searchweb 调用时返回提示
 
     @classmethod
     def load(
@@ -61,6 +62,9 @@ class Settings:
         max_read_chars = int(agent_section.get("max_read_chars", 20000))
         tool_round_limit = int(agent_section.get("tool_round_limit", 8))
 
+        search_section = parser["search"] if "search" in parser else {}
+        search_api_key = (search_section.get("baidu-qianfan-apikey", "") or "").strip()
+
         root = Path(workspace).expanduser().resolve() if workspace else Path.cwd().resolve()
         return cls(
             base_url=base_url,
@@ -70,4 +74,5 @@ class Settings:
             system_prompt=system_prompt,
             max_read_chars=max_read_chars,
             tool_round_limit=tool_round_limit,
+            search_api_key=search_api_key,
         )
