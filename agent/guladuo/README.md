@@ -12,6 +12,7 @@ guladuo/
 │   ├── errors.py           ← 领域异常
 │   ├── events.py           ← 对前端输出的唯一契约（事件）
 │   ├── conversation.py     ← 对话历史
+│   ├── skills.py           ← Skill 发现、注册、System Prompt 注入
 │   ├── agent.py            ← 编排循环：模型 ⇄ 工具
 │   ├── factory.py          ← 组合根：装配出一个 Agent
 │   ├── llm/
@@ -25,7 +26,8 @@ guladuo/
 │       ├── files.py        ← 9 个文件类工具
 │       ├── search.py       ← searchweb：百度千帆 AI 搜索（联网查询）
 │       ├── fetch.py        ← fetchweb：curl 抓网页 + trafilatura 提取正文转 Markdown
-│       └── runcli.py       ← runcli：subprocess 执行本地命令行程序（shell=False）
+│       ├── runcli.py       ← runcli：subprocess 执行本地命令行程序（shell=False）
+│       └── load_skill.py   ← loadSkill：按需加载 SKILL.md / 技能内附加文件
 ├── tui/                    ← Textual 前端
 │   ├── app.py              ← App、事件消费、线程调度、斜杠命令
 │   ├── widgets.py          ← 消息气泡、可折叠工具卡片、侧栏、帮助弹窗
@@ -136,6 +138,94 @@ tool = Tool(
   解析失败、正文提取失败（如 SPA/验证码页）都会以清晰中文错误
   `ok=false` 回传给模型，不会中断对话；
 - 与 searchweb 配合使用：先搜索拿链接，再抓正文深读。
+
+## Skill 发现（Agent Skills 规范）
+
+启动时以**程序的工作目录**为项目根，扫描 `.agents/skills/<skill>/SKILL.md`：
+
+```
+<项目根>/.agents/skills/
+├── notice/SKILL.md          ← frontmatter: name + description
+└── pdf-tools/SKILL.md
+```
+
+```markdown
+---
+name: notice
+description: 撰写公司内部通知。触发词：通知、公告。
+---
+
+# 撰写通知规范
+...
+```
+
+- 初始化阶段**只解析 frontmatter**（读到结束的 `---` 就停），不读正文、不加载脚本，
+  即使某个技能正文有 5MB，发现全部技能也只需几十毫秒；
+- `name` / `description` 都是必填；`name` 需符合小写字母+数字+连字符、≤64 字符；
+  不合规的目录会被跳过并记录在 `registry.skipped`（含原因），不影响其它技能；
+- 重名时优先保留「目录名与 name 一致」的那个；
+- 结果挂在 `agent.skills`（`SkillRegistry`），提供 `names` / `get(name)` / `summary()`，
+  TUI 右侧栏显示「技能 N 个」。
+
+### 注入 System Prompt
+
+启动时会把技能清单拼到 `config.ini` 的 `system_prompt` 之后（只有 name 和 description）：
+
+```
+你是一个本地文件助手……
+
+You have access to the following skills:
+
+- `notice`: 撰写公司内部通知。触发词：通知、公告。
+- `pdf-tools`: 处理 PDF：拆分、合并、提取表格。
+
+Use the `loadSkill` tool to load the full instructions of a skill when needed.
+You can also load additional files referenced by a skill.
+```
+
+- 没有技能时不追加任何内容，保持原提示词不变；
+- 正文不进提示词，模型只知道「有哪些技能、什么时候该加载」；
+- 技能较多时这部分仍很短（2 个技能约 260 字符）。
+
+### loadSkill 工具
+
+模型按需加载内容，两级：
+
+| 调用 | 返回 |
+|---|---|
+| `loadSkill(name="notice")` | `SKILL.md` 全文（含技能目录绝对路径） |
+| `loadSkill(name="notice", filename="scripts/x.py")` | 只返回该文件，不重复返回 SKILL.md |
+
+`filename` 解析顺序：**绝对路径 → 相对技能目录 → 相对项目根 → 递归按文件名/路径后缀搜索**。
+只写文件名且目录内有多个同名文件时，返回候选相对路径清单让模型自己选。
+
+安全：所有读取都 `resolve()` 后校验必须落在该技能目录内，`../`、指向外部的绝对路径、
+符号链接逃逸一律拒绝；二进制文件、超大文件（>200k 字符）分别报错/截断。
+
+### 动态加载原则
+
+技能正文进入上下文**只有一个入口**：模型主动调用 `loadSkill`。
+
+| 时机 | 上下文里有什么 |
+|---|---|
+| 启动 / 首次请求 | 只有 `name` + `description`（提示词里的技能清单） |
+| 模型判断需要该技能 | 调用 `loadSkill`，正文作为一条 **tool 消息**进入上下文 |
+| 后续轮次 | 已加载的正文随对话历史保留，无需重复加载 |
+
+这条约定靠结构保证，不是靠提示词祈祷：
+
+- `discover_skills()` 只解析 frontmatter（读到结束的 `---` 就停），启动开销与技能正文大小无关；
+- `to_prompt()` 只输出 `- name: description` 一行，正文一个字都不进 System Prompt；
+- `loadSkill` 是普通工具，走的是现有的工具调用循环，`core/agent.py` 的主流程一行没改——
+  技能不需要任何特殊的调度逻辑，也不会挤占别的工具。
+
+**与 runcli / 文件工具协同**：`loadSkill` 返回结果里带技能目录的绝对路径，
+模型可以直接用 `runcli` 执行技能自带的脚本；脚本产物再用 `createFile` / `editFile`
+写回工作区。三者共享同一个工具循环与同一轮次预算，可以任意组合、连续调用。
+
+> 注意：技能目录在**项目根**（启动时 cwd）下，若 `-w` 指定的工作区是别的目录，
+> 技能目录就在工作区之外，`readFile` 会被沙箱拦下——此时读技能文件请统一走 `loadSkill`，
+> 执行技能脚本用 `loadSkill` 返回的绝对路径。
 
 ## 本地命令执行（runcli）
 

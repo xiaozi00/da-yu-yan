@@ -136,6 +136,7 @@ class GuladoApp(App):
             session_id=self._session_id,
             turns=self._turn_count,
             messages=len(self.agent.conversation),
+            skills=len(self.agent.skills),
             round_limit=self.settings.tool_round_limit,
             busy=self._busy,
         )

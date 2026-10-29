@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Iterator
 
@@ -22,6 +23,7 @@ from .events import (
     TurnStarted,
 )
 from .llm.port import LLMClient
+from .skills import SkillRegistry
 from .tools.registry import ToolRegistry
 
 
@@ -40,11 +42,13 @@ class Agent:
         tools: ToolRegistry,
         conversation: Conversation | None = None,
         *,
+        skills: SkillRegistry | None = None,
         tool_round_limit: int = 8,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._conversation = conversation or Conversation()
+        self._skills = skills or SkillRegistry(root=Path.cwd())
         self._round_limit = tool_round_limit
 
     # ---------- 只读状态 ----------
@@ -52,6 +56,15 @@ class Agent:
     @property
     def conversation(self) -> Conversation:
         return self._conversation
+
+    @property
+    def skills(self) -> SkillRegistry:
+        """初始化时发现的技能（只有 name / description，不含正文）。"""
+        return self._skills
+
+    @property
+    def skill_names(self) -> list[str]:
+        return self._skills.names
 
     @property
     def tool_names(self) -> list[str]:

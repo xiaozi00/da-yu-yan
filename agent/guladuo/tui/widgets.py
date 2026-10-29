@@ -171,6 +171,7 @@ class SessionPanel(Static):
         session_id: str,
         turns: int,
         messages: int,
+        skills: int,
         round_limit: int,
         busy: bool,
     ) -> None:
@@ -183,6 +184,7 @@ class SessionPanel(Static):
             ("会话", session_id),
             ("轮次", str(turns)),
             ("消息", str(messages)),
+            ("技能", "%d 个（.agents/skills）" % skills if skills else "未发现"),
             ("上限", "%d 次模型调用/轮" % round_limit),
             ("状态", "推理中…" if busy else "就绪"),
         ]
