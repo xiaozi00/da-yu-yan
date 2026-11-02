@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "example-http": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      },
+      "timeout": 30,
+      "connectTimeout": 10
+    }
+  }
+}

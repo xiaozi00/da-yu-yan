@@ -63,6 +63,16 @@ class SkillRegistry:
     def get(self, name: str) -> Skill | None:
         return self._by_name.get((name or "").strip())
 
+    def add(self, skill: Skill) -> None:
+        """运行期注册（如 createSkill 创建后立即可用），重启后由 discovery 正式接管。
+
+        重名时静默忽略——启动时发现的那份优先。
+        """
+        if skill.name in self._by_name:
+            return
+        self._by_name[skill.name] = skill
+        self.skills = self.skills + (skill,)
+
     def __len__(self) -> int:
         return len(self.skills)
 

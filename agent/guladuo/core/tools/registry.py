@@ -26,6 +26,10 @@ class ToolRegistry:
         for tool in tools:
             self.register(tool)
 
+    def upsert(self, tool: Tool) -> None:
+        """注册或替换同名工具（MCP 重连后工具定义可能变了）。"""
+        self._tools[tool.name] = tool
+
     # ---------- 查询 ----------
 
     @property
@@ -65,5 +69,15 @@ class ToolRegistry:
             return ToolResult(name=name, output="参数不匹配：%s" % exc, ok=False, arguments=arguments)
         except Exception as exc:  # 工具内部异常不能炸掉整轮对话
             return ToolResult(name=name, output="工具执行异常：%s" % exc, ok=False, arguments=arguments)
+
+        # 约定：handler 可以直接返回 ToolResult 来表达「失败但信息要给模型」，
+        # 比如 MCP 工具返回 isError=true 的情况。
+        if isinstance(output, ToolResult):
+            return ToolResult(
+                name=name,
+                output=str(output.output),
+                ok=output.ok,
+                arguments=arguments,
+            )
 
         return ToolResult(name=name, output=str(output), ok=True, arguments=arguments)

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "Bazi-MCP": {
+      "type": "streamable_http",
+      "url": "${BAZI_MCP_URL}",
+      "timeout": 60,
+      "connectTimeout": 20
+    },
+    "pei-hospital": {
+      "type": "http",
+      "url": "http://127.0.0.1:8090/mcp",
+      "timeout": 60,
+      "connectTimeout": 20
+    }
+  }
+}

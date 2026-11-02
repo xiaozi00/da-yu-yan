@@ -26,3 +26,11 @@ class ToolNotFound(ToolError):
 
 class PathOutsideWorkspace(ToolError):
     """路径越出工作区，属于安全拦截。"""
+
+
+class MCPError(GuLaduoError):
+    """连接 MCP Server 或调用 MCP 工具失败。"""
+
+
+class MCPConnectionLost(MCPError):
+    """与 MCP Server 的连接断了（可重连后再试）。"""

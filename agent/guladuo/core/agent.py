@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from .conversation import Conversation
 from .errors import GuLaduoError
@@ -25,6 +25,9 @@ from .events import (
 from .llm.port import LLMClient
 from .skills import SkillRegistry
 from .tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from .mcp.manager import MCPManager
 
 
 @dataclass
@@ -43,12 +46,14 @@ class Agent:
         conversation: Conversation | None = None,
         *,
         skills: SkillRegistry | None = None,
+        mcp: "MCPManager | None" = None,
         tool_round_limit: int = 8,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._conversation = conversation or Conversation()
         self._skills = skills or SkillRegistry(root=Path.cwd())
+        self._mcp = mcp
         self._round_limit = tool_round_limit
 
     # ---------- 只读状态 ----------
@@ -56,6 +61,17 @@ class Agent:
     @property
     def conversation(self) -> Conversation:
         return self._conversation
+
+    @property
+    def mcp(self):
+        """MCP 连接管理器（未配置时为 None），只读用途。"""
+        return self._mcp
+
+    def close(self) -> None:
+        """释放外部资源（目前只有 MCP 长连接）。"""
+        if self._mcp is not None:
+            self._mcp.close()
+            self._mcp = None
 
     @property
     def skills(self) -> SkillRegistry:
@@ -74,6 +90,20 @@ class Agent:
     def tools(self) -> list:
         """全部工具对象（含描述），供前端展示，不参与业务。"""
         return self._tools.tools
+
+    def add_tools(self, tools) -> list[str]:
+        """注册（或替换）一批外部工具，返回被更新的工具名。"""
+        names: list[str] = []
+        for tool in tools:
+            self._tools.upsert(tool)
+            names.append(tool.name)
+        return names
+
+    def reload_mcp(self) -> list[str]:
+        """重新读取 `.mcp.json` 并重连，把新工具接进来。"""
+        if self._mcp is None:
+            return []
+        return self.add_tools(self._mcp.reload())
 
     def reset(self) -> None:
         self._conversation.clear()

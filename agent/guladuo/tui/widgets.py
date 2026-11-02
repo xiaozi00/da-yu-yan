@@ -172,6 +172,7 @@ class SessionPanel(Static):
         turns: int,
         messages: int,
         skills: int,
+        mcp: str,
         round_limit: int,
         busy: bool,
     ) -> None:
@@ -185,6 +186,7 @@ class SessionPanel(Static):
             ("轮次", str(turns)),
             ("消息", str(messages)),
             ("技能", "%d 个（.agents/skills）" % skills if skills else "未发现"),
+            ("MCP", mcp),
             ("上限", "%d 次模型调用/轮" % round_limit),
             ("状态", "推理中…" if busy else "就绪"),
         ]
@@ -216,6 +218,7 @@ COMMANDS = [
     ("/clear", "清空界面（保留历史）"),
     ("/new", "新建会话（重置历史）"),
     ("/tools", "列出已注册工具"),
+    ("/mcp", "MCP 连接状态（/mcp reload 重连）"),
     ("/cwd", "显示工作目录"),
     ("/model", "显示模型与接口"),
     ("/quit", "退出"),

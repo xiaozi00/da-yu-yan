@@ -114,6 +114,33 @@ class GuladoApp(App):
             )
         )
         self.query_one("#prompt", Input).focus()
+        self._announce_mcp()
+
+    def _announce_mcp(self) -> None:
+        """启动时把 MCP 接入结果说清楚，接不上不用猜。"""
+        mcp = self.agent.mcp
+        if mcp is None:
+            return
+        problems = mcp.diagnostics()
+        if problems:
+            self._add_bubble(
+                "error",
+                "MCP 接入有问题：\n%s\n可用 /mcp 查看详情，或运行 python mcp_doctor.py 体检。"
+                % "\n".join("• %s" % line for line in problems),
+            )
+        elif mcp.bindings:
+            self._add_bubble(
+                "system",
+                "已接入 MCP：%d 个 server / %d 个工具（/mcp 查看）"
+                % (len(mcp.servers), len(mcp.bindings)),
+            )
+
+    def on_unmount(self) -> None:
+        """退出时释放 MCP 长连接（否则后台线程会拖住进程退出）。"""
+        try:
+            self.agent.close()
+        except Exception:
+            pass
 
     def _update_infocard(self) -> None:
         from rich.text import Text
@@ -129,6 +156,9 @@ class GuladoApp(App):
     # ---------- 信息栏 / 状态条 ----------
 
     def _refresh_panels(self) -> None:
+        mcp_info = "未配置"
+        if self.agent.mcp is not None:
+            mcp_info = self.agent.mcp.summary()
         self.query_one("#session-panel", SessionPanel).update_info(
             model=self.settings.model,
             base_url=self.settings.base_url,
@@ -137,6 +167,7 @@ class GuladoApp(App):
             turns=self._turn_count,
             messages=len(self.agent.conversation),
             skills=len(self.agent.skills),
+            mcp=mcp_info,
             round_limit=self.settings.tool_round_limit,
             busy=self._busy,
         )
@@ -196,6 +227,8 @@ class GuladoApp(App):
             self._add_bubble("system", "\n".join(lines))
         elif name == "/cwd":
             self._add_bubble("system", "工作目录：%s" % self.settings.workspace)
+        elif name == "/mcp":
+            self._show_mcp(arg)
         elif name == "/model":
             self._add_bubble(
                 "system",
@@ -206,6 +239,40 @@ class GuladoApp(App):
         else:
             known = " ".join(cmd for cmd, _ in COMMANDS)
             self._add_bubble("error", "未知命令：%s\n可用命令：%s" % (name, known))
+
+    def _show_mcp(self, arg: str) -> None:
+        """`/mcp` 看状态，`/mcp reload` 重读 .mcp.json 并重连。"""
+        mcp = self.agent.mcp
+        if mcp is None:
+            self._note("未启用 MCP（启动时没有读到 .mcp.json）。")
+            return
+
+        if arg.lower() in {"reload", "refresh", "重连"}:
+            names = self.agent.reload_mcp()
+            self._refresh_panels()
+            self._note(
+                "已重新读取 %s，更新 %d 个工具。"
+                % (mcp.config.path, len(names))
+            )
+
+        lines = [
+            "MCP 配置：%s" % mcp.config.path,
+            "状态：%s" % mcp.summary(),
+        ]
+        for status in mcp.server_status:
+            mark = "✓ 已连接" if status.connected else "✗ 未连接"
+            lines.append("  • %-14s %s  %d 工具  %s" % (status.name, mark, status.tool_count, status.url))
+            if not status.connected and status.error:
+                lines.append("      原因：%s" % status.error)
+        if mcp.bindings:
+            lines.append("工具：")
+            lines += ["  - %s" % binding.exposed_name for binding in mcp.bindings]
+        for line in mcp.diagnostics():
+            if "连接失败" in line:  # 已在上面按 server 展示过，不重复
+                continue
+            lines.append("  ! %s" % line)
+        lines.append("提示：改完 .mcp.json 用 /mcp reload 重连，无需退出。")
+        self._add_bubble("system", "\n".join(lines))
 
     def action_command_clear(self) -> None:
         """清空界面，但保留对话历史。"""
