@@ -26,6 +26,9 @@ class StreamDelta:
 
     content: str = ""
     tool_calls: Sequence[ToolCallDelta] = field(default_factory=tuple)
+    # 模型返回的 usage（包含 prompt + completion 的总 token 数）。
+    # 只有流结束那个 chunk 可能带，取不到就是 None，调用方退回本地估算。
+    usage_tokens: int | None = None
 
 
 class LLMClient(Protocol):

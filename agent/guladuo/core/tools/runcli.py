@@ -18,13 +18,18 @@ from pathlib import Path
 from ..errors import ToolError
 from .base import Tool
 
-DEFAULT_TIMEOUT = 30      # 默认超时（秒）
+DEFAULT_TIMEOUT = 30      # 默认超时（秒），可被 config.ini [tools] runcli_timeout 覆盖
 MAX_TIMEOUT = 300         # 允许的最长超时
 DEFAULT_OUTPUT_LIMIT = 4000   # 单个流的默认输出上限（字符）
 MAX_OUTPUT_LIMIT = 20000
 
 
-def build_runcli_tool(workspace: str | Path | None = None) -> Tool:
+def build_runcli_tool(
+    workspace: str | Path | None = None,
+    default_timeout: int = DEFAULT_TIMEOUT,
+    default_output: int = DEFAULT_OUTPUT_LIMIT,
+    hard_limit: int = MAX_OUTPUT_LIMIT,
+) -> Tool:
     """构造 runcli 工具。workspace 非空时作为命令的执行目录。"""
 
     cwd = str(Path(workspace).resolve()) if workspace else None
@@ -32,8 +37,8 @@ def build_runcli_tool(workspace: str | Path | None = None) -> Tool:
     def run_cli(
         command: str,
         args: list[str] | None = None,
-        timeout: int = DEFAULT_TIMEOUT,
-        max_output: int = DEFAULT_OUTPUT_LIMIT,
+        timeout: int = default_timeout,
+        max_output: int = default_output,
     ) -> str:
         command = (command or "").strip()
         if not command:
@@ -52,14 +57,14 @@ def build_runcli_tool(workspace: str | Path | None = None) -> Tool:
         try:
             timeout = int(timeout)
         except (TypeError, ValueError):
-            timeout = DEFAULT_TIMEOUT
+            timeout = default_timeout
         timeout = max(1, min(timeout, MAX_TIMEOUT))
 
         try:
             max_output = int(max_output)
         except (TypeError, ValueError):
-            max_output = DEFAULT_OUTPUT_LIMIT
-        max_output = max(200, min(max_output, MAX_OUTPUT_LIMIT))
+            max_output = default_output
+        max_output = max(200, min(max_output, hard_limit))
 
         try:
             completed = subprocess.run(
@@ -127,12 +132,12 @@ def build_runcli_tool(workspace: str | Path | None = None) -> Tool:
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "执行超时秒数（1-300），默认 30",
+                    "description": "执行超时秒数（1-300），默认 %d" % default_timeout,
                 },
                 "max_output": {
                     "type": "integer",
-                    "description": "stdout/stderr 各自返回的最大字符数（200-20000），默认 4000，"
-                        "超出部分截断并标注",
+                    "description": "stdout/stderr 各自返回的最大字符数（200-%d），默认 %d，"
+                        "超出部分截断并标注" % (hard_limit, default_output),
                 },
             },
             "required": ["command"],

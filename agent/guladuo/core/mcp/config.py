@@ -91,8 +91,18 @@ class _InvalidServer(Exception):
     """内部使用：单个 server 配置不合法。"""
 
 
-def load_mcp_config(root: str | Path, env: Mapping[str, str] | None = None) -> MCPConfig:
-    """读取 `<root>/.mcp.json`。任何情况下都不抛异常。"""
+def load_mcp_config(
+    root: str | Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    call_timeout: float = DEFAULT_CALL_TIMEOUT,
+    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+) -> MCPConfig:
+    """读取 `<root>/.mcp.json`。任何情况下都不抛异常。
+
+    `call_timeout` / `connect_timeout` 是 config.ini 给的全局默认值，
+    单个 server 仍可用自身配置项覆盖。
+    """
     path = Path(root) / CONFIG_FILENAME
     if not path.is_file():
         return MCPConfig(path=path)
@@ -125,14 +135,22 @@ def load_mcp_config(root: str | Path, env: Mapping[str, str] | None = None) -> M
 
     for name, entry in servers_raw.items():
         try:
-            servers.append(_parse_server(str(name), entry, environment))
+            servers.append(
+                _parse_server(str(name), entry, environment, call_timeout, connect_timeout)
+            )
         except _InvalidServer as exc:
             skipped.append(UnusableServer(name=str(name), reason=str(exc)))
 
     return MCPConfig(path=path, servers=tuple(servers), skipped=tuple(skipped))
 
 
-def _parse_server(name: str, entry: Any, env: Mapping[str, str]) -> MCPServerConfig:
+def _parse_server(
+    name: str,
+    entry: Any,
+    env: Mapping[str, str],
+    default_call_timeout: float = DEFAULT_CALL_TIMEOUT,
+    default_connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+) -> MCPServerConfig:
     if not isinstance(entry, dict):
         raise _InvalidServer("配置必须是对象")
 
@@ -164,10 +182,10 @@ def _parse_server(name: str, entry: Any, env: Mapping[str, str]) -> MCPServerCon
     for key, value in headers_raw.items():
         headers[str(key)] = _expand(str(value), env)
 
-    timeout = _positive_float(entry.get("timeout"), DEFAULT_CALL_TIMEOUT, "timeout")
+    timeout = _positive_float(entry.get("timeout"), default_call_timeout, "timeout")
     connect_timeout = _positive_float(
         entry.get("connectTimeout", entry.get("connect_timeout")),
-        DEFAULT_CONNECT_TIMEOUT,
+        default_connect_timeout,
         "connectTimeout",
     )
 

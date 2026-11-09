@@ -120,7 +120,11 @@ def build_system_prompt(base: str, registry: SkillRegistry) -> str:
     return ("%s\n\n%s" % (base.strip(), block)).strip()
 
 
-def discover_skills(project_root: str | Path) -> SkillRegistry:
+def discover_skills(
+    project_root: str | Path,
+    max_frontmatter_bytes: int = MAX_FRONTMATTER_BYTES,
+    max_description_chars: int = MAX_DESCRIPTION_CHARS,
+) -> SkillRegistry:
     """扫描项目根下的 .agents/skills/，加载所有合法技能的元数据。
 
     目录不存在属于正常情况（项目没有技能），返回空注册表而不是报错。
@@ -141,7 +145,7 @@ def discover_skills(project_root: str | Path) -> SkillRegistry:
             skipped.append(SkippedSkill(entry, "缺少 SKILL.md"))
             continue
 
-        meta = read_frontmatter(skill_file)
+        meta = read_frontmatter(skill_file, max_frontmatter_bytes)
         if meta is None:
             skipped.append(SkippedSkill(entry, "SKILL.md 开头没有合法的 YAML frontmatter"))
             continue
@@ -160,9 +164,9 @@ def discover_skills(project_root: str | Path) -> SkillRegistry:
                 SkippedSkill(entry, "name 不符合规范（小写字母/数字/连字符，最长 %d 字符）：%r" % (MAX_NAME_CHARS, name))
             )
             continue
-        if len(description) > MAX_DESCRIPTION_CHARS:
+        if len(description) > max_description_chars:
             skipped.append(
-                SkippedSkill(entry, "description 超过 %d 字符" % MAX_DESCRIPTION_CHARS)
+                SkippedSkill(entry, "description 超过 %d 字符" % max_description_chars)
             )
             continue
 
@@ -192,7 +196,7 @@ def discover_skills(project_root: str | Path) -> SkillRegistry:
     return SkillRegistry(root=root, skills=tuple(skills), skipped=tuple(skipped))
 
 
-def read_frontmatter(path: Path) -> dict[str, str] | None:
+def read_frontmatter(path: Path, max_bytes: int = MAX_FRONTMATTER_BYTES) -> dict[str, str] | None:
     """只读 frontmatter 就返回，不加载正文。
 
     失败（文件打不开、没有以 --- 开头、没有结束标记）返回 None。
@@ -207,7 +211,7 @@ def read_frontmatter(path: Path) -> dict[str, str] | None:
             read_bytes = len(first.encode("utf-8", "replace"))
             for line in handle:
                 read_bytes += len(line.encode("utf-8", "replace"))
-                if read_bytes > MAX_FRONTMATTER_BYTES:
+                if read_bytes > max_bytes:
                     return None
                 if line.strip() == "---":
                     return meta

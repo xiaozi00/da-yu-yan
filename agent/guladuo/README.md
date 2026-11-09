@@ -8,10 +8,13 @@
 ```
 guladuo/
 ├── core/                   ← 业务核心，禁止 import 任何界面框架
-│   ├── config.py           ← 配置加载（路径锚定本文件，不依赖 cwd）
+│   ├── config.py           ← 配置加载（全量参数 + 默认值 + 自动生成模板）
 │   ├── errors.py           ← 领域异常
 │   ├── events.py           ← 对前端输出的唯一契约（事件）
 │   ├── conversation.py     ← 对话历史
+│   ├── agents_md.py        ← AGENTS.md：一次注入、全程复用
+│   ├── sessions.py         ← 会话事件日志（JSONL）：保存 / 列表 / 恢复
+│   ├── context.py          ← 上下文：token 估算、归档、检索、压缩 Prompt
 │   ├── skills.py           ← Skill 发现、注册、System Prompt 注入
 │   ├── agent.py            ← 编排循环：模型 ⇄ 工具
 │   ├── factory.py          ← 组合根：装配出一个 Agent
@@ -21,7 +24,7 @@ guladuo/
 │   ├── mcp/                ← MCP 客户端（.mcp.json → 动态注册外部工具）
 │   │   ├── config.py       ← .mcp.json 解析与校验（仅 Streamable HTTP）
 │   │   ├── connection.py   ← 单个 server 的长连接（asyncio 线程 + 同步桥）
-│   │   └── manager.py      ← 多 server 管理、工具命名空间、结果整理
+│   │   └── manager.py      ← 多 server 管理、异步加载、命名空间、结果整理
 │   └── tools/
 │       ├── base.py         ← Tool / ToolResult
 │       ├── registry.py     ← 注册、schema 导出、参数解析、分发
@@ -32,10 +35,11 @@ guladuo/
 │       ├── fetch.py        ← fetchweb：curl 抓网页 + trafilatura 提取正文转 Markdown
 │       ├── runcli.py       ← runcli：subprocess 执行本地命令行程序（shell=False）
 │       ├── load_skill.py   ← loadSkill：按需加载 SKILL.md / 技能内附加文件
-│       └── create_skill.py ← createSkill：按自然语言要求创建新技能
+│       ├── create_skill.py ← createSkill：按自然语言要求创建新技能
+│       └── recall_context.py ← recallContext：在压缩归档里做关键词检索
 ├── tui/                    ← Textual 前端
-│   ├── app.py              ← App、事件消费、线程调度、斜杠命令
-│   ├── widgets.py          ← 消息气泡、可折叠工具卡片、侧栏、帮助弹窗
+│   ├── app.py              ← App、事件消费、线程调度、斜杠命令、会话管理
+│   ├── widgets.py          ← 气泡、工具卡片、命令补全、侧栏、各种弹窗
 │   └── app.tcss            ← 样式
 ├── run.py                  ← 统一入口
 ├── mcp_doctor.py           ← MCP 体检：连接 + 列工具 + 试调一次
@@ -63,13 +67,108 @@ python run.py --workspace D:/some/dir  # 指定工作区（默认当前目录）
 python run.py --config other.ini       # 指定配置
 ```
 
-快捷键：`Enter` 发送，`Esc` 中断生成，`Ctrl+L` 清屏（保留历史），`Ctrl+N` 新会话，
-`Ctrl+B` 收起/展开侧栏，`F1` 帮助，`Ctrl+Q` 退出。
+### 首次运行：自动生成 config.ini
 
-命令：`/help`、`/clear`、`/new`、`/tools`、`/cwd`、`/model`、`/quit`。
+启动时按这个顺序找配置：`--config` → `./config.ini`（当前目录）→ 项目内 `config.ini`。
+**三者都不存在**时，会在当前目录写一份带 mock 值的完整模板，并弹出对话框提醒：
 
-界面布局：左侧对话流（用户 / 助手气泡 + 可点击折叠的工具卡片），右侧会话信息与
-工具清单侧栏，底部状态条（轮次 / 工具调用次数 / 上轮耗时）。
+```
+文件：D:\skill\config.ini
+里面的模型与 API Key 都是 mock 值，直接运行无法正常工作。
+请修改 [llm] base_url / api_key / model 后重新启动程序。
+```
+
+对话框里可以选择「退出，去修改配置」（默认）或「仍然进入（只看看界面）」。
+
+配置文件里所有参数都有内置默认值：**删掉某一项就退回默认值，写错不会崩溃**，
+只会在启动时提示「哪一项不合法、已用默认值」。完整清单见
+`core/config.py` 的 `CONFIG_TEMPLATE`（生成的模板自带逐项注释）。
+
+### 快捷键
+
+`Enter` 发送 / 执行选中的命令，`↑ ↓` 在命令面板内选择，`Tab` 补全命令，
+`Esc` 关闭面板 / 中断生成，`Ctrl+N` 新会话，`Ctrl+R` 历史会话，`Ctrl+S` 保存会话，
+`Ctrl+L` 清屏（保留历史），`Ctrl+B` 收起/展开侧栏，`F1` 帮助，`Ctrl+Q` 退出。
+
+### 斜杠命令
+
+输入 `/` 就会弹出补全引导面板（只显示选中项附近的一屏，最多 8 条）：
+
+```
+ 命令 ↑↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭  1/16
+ ▸ /help         打开帮助面板
+   /new          新建会话（自动保存当前会话）
+   /resume       历史会话列表：↑↓ 选择，Enter 恢复，Esc 取消
+   /save         保存当前会话到 .agents/sessions
+   /rename <标题> 给当前会话改名
+   /export <路径> 把当前会话导出为 Markdown
+   /compact      压缩上下文：归档原始记录 + 生成摘要
+   /clear        清空界面（保留历史与上下文）
+```
+
+| 命令 | 作用 |
+|---|---|
+| `/help` | 帮助面板（命令 + 快捷键） |
+| `/new` | 新建会话：**先把当前会话存盘**，再重置历史与界面 |
+| `/resume` | 历史会话列表：↑↓ 选择、Enter 恢复、Esc 取消 |
+| `/save` | 手动保存当前会话 |
+| `/rename <标题>` | 给当前会话改名（会立即落盘） |
+| `/export <路径>` | 导出为 Markdown，相对路径按工作目录解析 |
+| `/compact` | 压缩上下文，完成后弹双栏「压缩日志」 |
+| `/clear` | 清空界面，历史与上下文保留 |
+| `/tools` `/skills` | 列出已注册工具 / 已发现技能 |
+| `/mcp [reload]` | MCP 连接状态；`reload` 重读 `.mcp.json` 并重连 |
+| `/config` | 列出当前生效的全部配置项（含来源文件与告警） |
+| `/init` | 生成 `AGENTS.md` 模板（已存在则不覆盖） |
+| `/model` `/cwd` | 显示模型与接口 / 工作目录 |
+| `/quit` | 退出（退出前自动保存） |
+
+界面布局：左侧对话流（用户 / 助手气泡 + 可点击折叠的工具卡片），右侧三块侧栏
+（会话信息 → **MCP 服务器与工具** → 工具清单），底部状态条（轮次 / 工具调用次数 /
+上轮耗时 / 会话编号）。
+
+## 会话持久化（/new · /resume · /save）
+
+会话写在 `<项目根>/.agents/sessions/<session_id>.jsonl`（项目根 = 启动时的 cwd）：
+
+```text
+{"type":"meta","session_id":"20261105-114209-ddfb","title":"帮我看看这个报错","created":"...","updated":"...","model":"deepseek-chat","messages":12,"tokens":4820}
+{"type":"message","kind":"agents_md","ts":"...","message":{"role":"user","content":"<!-- guladuo:agents-md --> ..."}}
+{"type":"message","kind":"user","ts":"...","message":{"role":"user","content":"帮我看看这个报错"}}
+{"type":"message","kind":"assistant","ts":"...","message":{"role":"assistant","content":"...","tool_calls":[...]}}
+```
+
+- **整体快照**而不是纯追加：压缩会把历史换成摘要，纯追加恢复出来会重复；
+  快照每次写「当前真实历史」，`/resume` 直接可用。先写 `.tmp` 再改名，中途崩溃不留半个文件；
+- 自动保存时机：每轮回答结束、`/compact` 完成、`/new`、`/quit`、进程退出；
+- 标题取第一条用户消息（跳过 AGENTS.md 那条），可用 `/rename` 改；
+- `[session] keep` 控制最多保留多少个会话，超出按更新时间删最旧的；
+- `/resume` 恢复时会**先把当前会话存盘**，来回切换不丢东西；工具卡片会用归档里的输出还原；
+- 恢复的是完整历史（含 System Prompt 与 AGENTS.md 注入），所以不会重复注入、缓存前缀不变。
+
+## AGENTS.md：一次注入，全程复用
+
+如果项目根有 `AGENTS.md`（文件名可用 `[agent] agents_file` 改），会话开始时读**一次**，
+作为一条普通 user 消息插到 System Prompt 之后（位置固定 = index 1）：
+
+```
+<!-- guladuo:agents-md -->
+以下是项目根目录 `D:\skill\AGENTS.md` 的内容，是本项目的协作约定与背景说明。
+它在本会话开始时注入一次并全程有效，无需重复读取该文件……
+
+<AGENTS.md 原文>
+```
+
+- 之后所有轮次都**直接复用历史里这条消息**，不再读文件、不再重复注入；
+- 它随会话一起写进事件日志（`kind: agents_md`），`/resume` 恢复时自然带回，同样不注入第二次；
+- `/compact` 替换历史时会**保留**这条消息——项目约定属于「每次都要生效」的内容，
+  被摘要吃掉就等于换了个人格；
+- 因为消息前缀完全稳定，服务端 prompt cache 可以一直命中；每轮重新读取拼字符串
+  即使内容一样，也很容易把缓存前缀打破；
+- `/new` 视为新会话，会重新读一次文件（改完 `AGENTS.md` 用 `/new` 即可生效，无需重启）；
+- 没有这个文件就什么都不做，历史里不会多出空消息。
+
+超过 `[agent] agents_max_chars` 会被截断并标注。
 
 ## 事件协议（core → 前端）
 
@@ -83,6 +182,10 @@ python run.py --config other.ini       # 指定配置
 | `ToolCallFinished` | 工具执行完成 | 卡片追加结果与耗时 |
 | `TurnFinished` | 本轮结束 | 收尾、恢复输入 |
 | `AgentFailed` | 本轮异常 | 错误提示 |
+| `ContextUsageChanged` | 上下文用量变化 | 更新顶部用量条 |
+| `CompactStarted` | 压缩开始 | 系统气泡：归档编号 |
+| `CompactFinished` | 压缩成功 | 系统气泡：前后 token 对比 |
+| `CompactFailed` | 压缩失败（上下文不变） | 错误气泡，可重试 |
 
 ## 新增一个前端（以 web 为例）
 
@@ -120,15 +223,36 @@ tool = Tool(
 
 - 所有文件工具都经 `WorkspaceSandbox.resolve()`，越界路径直接拒绝；
 - 读写仅限纯文本扩展名白名单；
-- 单次读取上限 `max_read_chars`；
-- 一轮内工具调用有轮次上限，避免模型死循环。
+- 单次读取上限 `[agent] max_read_chars`；
+- 一轮内工具调用有轮次上限（`[agent] tool_round_limit`），避免模型死循环；
+- 单个工具结果上限 `[agent] max_tool_result_chars`，防止一条结果吃光上下文。
+
+## 配置项一览（全部在 config.ini）
+
+代码里不出现魔法数字：所有可调参数都在 `core/config.py` 的 `DEFAULTS` 里声明默认值，
+由 `config.ini` 覆盖，`/config` 可以随时查看当前生效值。
+
+| 小节 | 关键项 |
+|---|---|
+| `[llm]` | `base_url` / `api_key` / `model` / `request_timeout` |
+| `[agent]` | `system_prompt`、`max_read_chars`、`tool_round_limit`、`context_window`、`compact_threshold`、`max_tool_result_chars`、`agents_file`、`agents_max_chars` |
+| `[search]` | `api_key`（千帆 AI 搜索） |
+| `[tools]` | `fetch_timeout` / `fetch_max_chars` / `fetch_hard_limit`、`search_timeout`、`runcli_timeout` / `runcli_output_limit` / `runcli_hard_limit` |
+| `[context]` | `entry_limit`、`digest_max_archives` / `digest_summary_chars` / `digest_topic_chars`、`recall_limit` / `recall_max_chars` |
+| `[mcp]` | `enabled`、`async`、`call_timeout`、`connect_timeout` |
+| `[skills]` | `max_frontmatter_bytes`、`max_description_chars` |
+| `[session]` | `dir`、`keep` |
+| `[ui]` | `sidebar_width`、`tool_output_chars` |
+
+数值型参数带上下限保护：写 `tool_round_limit = abc` 会用默认值并告警，
+写 `sidebar_width = 5` 会被夹到下限 24。
 
 ## 联网搜索（searchweb）
 
 通过百度千帆 AI 搜索接口（`/v2/ai_search/web_search`）检索互联网，
 把参考来源的标题、链接、内容摘要整理后交给模型。
 
-- 密钥放在 `config.ini` 的 `[search]` 小节（`baidu-qianfan-apikey`），代码不硬编码；
+- 密钥放在 `config.ini` 的 `[search]` 小节（`api_key`，旧版键名 `baidu-qianfan-apikey` 仍兼容），代码不硬编码；
 - 未配置密钥时工具仍会注册，调用时返回清晰的配置提示；
 - 网络异常、接口报错（含鉴权失败 401/403、欠费）、解析失败都会以
   `ok=false` 的工具结果回传给模型，不会中断整轮对话；
@@ -267,6 +391,69 @@ You can also load additional files referenced by a skill.
 - ⚠️ 按教学要求**未做命令白名单/审批机制**，命令以运行 guladuo 的当前
   用户权限真实执行，仅适用于受控实验环境。
 
+## 上下文压缩与历史检索（/compact + recallContext）
+
+长时间任务迟早会把上下文塞满。guladuo 的做法刻意简单：**先归档、再摘要、最后替换**，
+不引入向量库或 Embedding，全部逻辑在 `core/context.py`（约 300 行）。
+
+### 用量怎么算、怎么显示
+
+- 优先用模型返回的 `usage.total_tokens`（`stream_options.include_usage`，
+  不支持该参数的接口会被自动关掉并退回估算）；
+- 拿不到 usage 时按「中日韩字符 1 token、其它字符 4 字符 1 token」估算，
+  并把工具定义也算进去；
+- 窗口大小来自 `config.ini` 的 `[agent] context_window`（`128k` / `131072`）。
+  留空表示不知道 → 按默认 128k 计算，界面上标注「默认」。
+
+TUI 顶部常驻一行：
+
+```
+ 上下文 12.3k / 128k  9.6%  默认  usage
+```
+
+（`usage` = 模型给的数，`估算` = 本地算的；达到阈值时变红并提示执行 `/compact`。）
+
+### 达到阈值之后会怎样
+
+`[agent] compact_threshold` 默认 **0.7**（70%）。达到阈值时：
+
+1. 弹一条红色提示，告诉用户该压缩了；
+2. **暂停接受新的普通提问**（斜杠命令仍然可用）；
+3. 只有 `/compact` 成功、或 `/new` 重开、或占用降到阈值以下才恢复输入。
+
+### `/compact` 做了什么
+
+1. **归档**：把除 System Prompt 外的全部消息写成
+   `<项目根>/.agents/context/<YYYYMMDD-HHMMSS>.jsonl`，一行一条，
+   保留 `role` / `content` / `tool_calls` / `tool_call_id` 与原始顺序。
+   先写 `.tmp` 再改名，**归档失败就直接中止**，绝不丢原文。
+2. **压缩**：用 `COMPACT_PROMPT` 发一次**不带工具**的模型请求
+   （所以压缩期间不可能触发 Function Calling），要求产出约 5,000 tokens 的 Markdown 摘要。
+3. **替换**：保留 System Prompt 与工具定义，历史换成一条摘要消息，末尾追加归档说明：
+
+   > 此前上下文已于 2026-11-05 10:26:25 完成压缩，原始上下文保存在编号为
+   > 20261105-102625 的归档文件中。如需查找历史信息，请使用 recallContext 工具。
+
+任何一步失败（写盘失败、模型报错、摘要为空）→ 原上下文**保持不变**，直接重试 `/compact` 即可。
+
+> 注意：压缩不保证一定变小。会话很短时（几百 token），5,000 token 的摘要反而更长；
+> 这个功能是为「几万 token 的长会话」准备的，短会话没必要压。
+
+### recallContext 工具
+
+压缩之后模型手上只有摘要。摘要里缺细节时，它可以自己查归档：
+
+```json
+{ "text": "pethospital.exe", "id": "20261105-102625" }
+```
+
+- `text` 必填，空格分隔多个词时要求**同时命中**（AND），大小写不敏感；
+- `id` 可选，不填就在 `.agents/context/` 下所有归档里搜；
+- 返回「归档编号 + 第几条 + 角色 + 命中位置前后的片段」，
+  默认最多 8 条 / 4000 字符，超出会提示缩小范围——避免检索结果又把上下文塞满。
+
+它就是一个普通工具（`core/tools/recall_context.py`），和 `readFile`、`runcli` 同级注册。
+
 ## MCP 客户端（接入外部 MCP Server）
 
 启动时读取**项目根目录**（= 启动时的 cwd，与技能目录同一个根）下的 `.mcp.json`，
@@ -315,14 +502,35 @@ You can also load additional files referenced by a skill.
 - 服务端 `isError=true`、参数校验失败、连接断开、调用超时，都会作为**工具结果**
   （`ok=false` + 中文说明）回传给模型，由模型决定重试或改方案，不会中断对话。
 
-### 启动降级
+### 启动降级与异步加载
 
 `.mcp.json` 不存在、JSON 语法错误、缺少 `mcpServers`、某个 server 连不上，
-都只记录在 `MCPManager.diagnostics()` 里并在侧栏显示摘要，**不影响 xAgent 启动**。
-TUI 右侧栏有一行 `MCP  2 server / 6 工具`（未配置时显示「未配置」）。
+都只记录在 `MCPManager.diagnostics()` 里并在侧栏显示，**不影响 xAgent 启动**。
 
-> 连接是在启动时同步建立的，某个 server 地址不可达会让启动多等一个连接超时
-> （默认 10 秒）。调试时可以先把 `connectTimeout` 调小，或用 `disabled: true` 暂时关掉。
+**连接是异步的**（`[mcp] async = true`，默认）：`create_agent()` 立刻返回，
+界面先渲染出来，后台线程再去握手；连上以后前端轮询到 `manager.loading == False`，
+自动把新工具注册进工具表并刷新侧栏，同时弹一条「MCP 已就绪」的系统消息。
+
+```
+侧栏 MCP 区域（加载中 → 完成）
+MCP · 2/2 已连接
+● Bazi-MCP 3 工具
+● pei-hospital 1 工具
+
+工具
+Bazi-MCP
+  • getBaziDetail
+  • getSolarTimes
+  • getChineseCalendar
+pei-hospital
+  • list_pets
+```
+
+连不上的 server 显示 `○ 未连接` 加一行原因（「端口 8090 连不上」「HTTP 410 …」），
+不需要再猜。整个过程中界面不会卡——连接 I/O 全程不持锁。
+
+> 想让启动像以前一样同步等待，把 `[mcp] async = false` 即可（多 server 时
+> 每个连不上的 server 会占一个 `connectTimeout`）。
 
 ### 示例：接入本机的 PeiHospitalMCP
 

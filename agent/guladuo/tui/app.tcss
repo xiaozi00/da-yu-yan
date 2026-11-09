@@ -24,6 +24,26 @@ Header {
     background: $surface;
 }
 
+/* MCP 区域：连上以后才有内容，给个高度上限免得挤掉工具列表 */
+#mcp-scroll {
+    height: auto;
+    max-height: 45%;
+    border-top: solid $panel;
+    padding: 0 0;
+}
+
+#mcp-panel {
+    width: 100%;
+    height: auto;
+    padding: 0 0;
+}
+
+#tools-scroll {
+    height: 1fr;
+    border-top: solid $panel;
+    padding: 0 0;
+}
+
 /* ---------- 顶部信息卡 ---------- */
 
 #infocard {
@@ -32,6 +52,16 @@ Header {
     padding: 0 1;
     background: $surface;
     border-left: thick $accent;
+}
+
+/* ---------- 上下文用量条 ---------- */
+
+#context-bar {
+    height: 1;
+    margin: 0 2 1 2;
+    padding: 0 1;
+    background: $boost;
+    color: $text;
 }
 
 /* ---------- 对话区 ---------- */
@@ -89,6 +119,16 @@ ToolCard.tool-failed {
 
 /* ---------- 输入框 / 状态条 ---------- */
 
+/* 斜杠命令补全面板：贴在输入框上方，高度由代码按条目数设置 */
+#command-menu {
+    height: auto;
+    margin: 0 2;
+    padding: 0 1;
+    background: $boost;
+    border-left: thick $accent;
+    color: $text;
+}
+
 #prompt {
     margin: 0 2 1 2;
     border: tall $accent;
@@ -135,3 +175,122 @@ HelpScreen {
     width: 100%;
     height: auto;
 }
+
+CompactLogScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#compact-log {
+    width: 92%;
+    height: 86%;
+    background: $surface;
+    border: round $accent;
+    padding: 0;
+}
+
+#compact-log-head {
+    height: 3;
+    padding: 0 1;
+    align-vertical: middle;
+}
+
+#compact-log-title {
+    width: 1fr;
+    padding: 1 1;
+}
+
+#compact-log-close {
+    width: auto;
+    height: 3;
+    margin: 0 0 0 1;
+}
+
+#compact-log-body {
+    height: 1fr;
+}
+
+#compact-log-left {
+    width: 1fr;
+    border-right: solid $accent-darken-1;
+    padding: 1 1;
+}
+
+#compact-log-right {
+    width: 1fr;
+    padding: 1 1;
+}
+
+#compact-log-left-text,
+#compact-log-right-text {
+    width: 100%;
+    padding: 0 1;
+}
+
+/* ---------- 历史会话列表 ---------- */
+
+SessionListScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#session-list-dialog {
+    width: 88;
+    max-width: 92%;
+    height: 70%;
+    padding: 0 1;
+    background: $surface;
+    border: round $accent;
+}
+
+#session-list-head {
+    height: 2;
+    padding: 1 1 0 1;
+}
+
+#session-options {
+    height: 1fr;
+    margin: 1 0;
+    background: $surface;
+}
+
+#session-list-hint {
+    height: 2;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+/* ---------- 配置提示 ---------- */
+
+ConfigNoticeScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#config-dialog {
+    width: 78;
+    max-width: 92%;
+    height: auto;
+    max-height: 88%;
+    padding: 1 2;
+    background: $surface;
+    border: round $warning;
+}
+
+#config-body {
+    width: 100%;
+    height: auto;
+}
+
+#config-buttons {
+    height: 3;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+#config-buttons Button {
+    width: auto;
+    min-width: 16;
+    margin-left: 2;
+}
+

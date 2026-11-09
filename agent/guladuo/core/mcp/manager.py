@@ -13,9 +13,10 @@ import atexit
 import hashlib
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ..errors import MCPConnectionLost, MCPError
 from ..tools.base import Tool, ToolResult
@@ -23,6 +24,7 @@ from .config import MCPConfig, load_mcp_config
 from .connection import MCPConnection, _describe
 
 # 单次工具返回给模型的最大字符数，超出截断，避免一条结果吃光上下文
+# （config.ini 的 [agent] max_tool_result_chars 会覆盖它，见 MCPManager.set_result_limit）
 MAX_RESULT_CHARS = 8000
 
 _INVALID_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]")
@@ -44,6 +46,7 @@ class ServerStatus:
     connected: bool
     tool_count: int
     error: str = ""
+    loading: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,23 +62,86 @@ class MCPToolBinding:
 
 
 class MCPManager:
-    def __init__(self, config: MCPConfig) -> None:
+    def __init__(
+        self,
+        config: MCPConfig,
+        *,
+        call_timeout: float | None = None,
+        connect_timeout: float | None = None,
+    ) -> None:
         self.config = config
+        self._default_call_timeout = call_timeout
+        self._default_connect_timeout = connect_timeout
         self._connections: dict[str, MCPConnection] = {}
         self._bindings: dict[str, MCPToolBinding] = {}
         self._tools: list[Tool] = []
         self._failed: list[tuple[str, str]] = []
         self._started = False
         self._new_tools: list[Tool] = []
+        # 连接过程可能跑在后台线程，而 TUI 同时在读状态 → 状态用锁保护；
+        # 网络 I/O 一律不持锁，否则会让界面卡住（异步加载就失去意义了）。
+        self._lock = threading.RLock()
+        self._loading = False
+        self._loaded = False
+        self._result_limit = MAX_RESULT_CHARS
 
     # ---------- 启动 / 关闭 ----------
 
     def start(self) -> None:
-        if self._started:
-            return
-        self._started = True
-        self._failed.clear()
-        self._new_tools = self._sync_all()
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            self._failed.clear()
+            self._new_tools = []
+        created = self._sync_all()
+        with self._lock:
+            self._new_tools.extend(created)
+
+    def start_async(self, on_ready: Callable[[], None] | None = None) -> None:
+        """后台线程连接所有 server，立即返回。
+
+        前端先渲染界面，连接完成后再由 `on_ready`（或轮询 `loading`）刷新侧栏。
+        """
+        with self._lock:
+            if self._started or self._loading:
+                return
+            self._loading = True
+
+        def worker() -> None:
+            try:
+                self.start()
+            finally:
+                with self._lock:
+                    self._loading = False
+                    self._loaded = True
+                if on_ready is not None:
+                    try:
+                        on_ready()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=worker, name="mcp-loader", daemon=True).start()
+
+    @property
+    def loading(self) -> bool:
+        """连接中（前端用来显示「加载中…」）。"""
+        return self._loading
+
+    @property
+    def loaded(self) -> bool:
+        """至少完成过一次连接尝试。"""
+        return self._loaded or (self._started and not self._loading)
+
+    def take_new_tools(self) -> list[Tool]:
+        """取走「自上次取走以来新增的工具」（异步加载完成后注册进工具表）。"""
+        with self._lock:
+            tools = list(self._new_tools)
+            self._new_tools = []
+            return tools
+
+    def set_result_limit(self, chars: int) -> None:
+        self._result_limit = max(200, int(chars))
 
     def reload(self) -> list[Tool]:
         """重新读 `.mcp.json`：新增 server 接上、配置变了重连、断线的重连。
@@ -83,59 +149,81 @@ class MCPManager:
         返回「新增或重建的 Tool」，由调用方（Agent）注册进工具表。
         连接对象在配置未变时会被复用，已有工具绑定继续有效。
         """
-        self.config = load_mcp_config(self.config.path.parent)
+        self.config = load_mcp_config(
+            self.config.path.parent,
+            call_timeout=self._default_call_timeout,
+            connect_timeout=self._default_connect_timeout,
+        )
         wanted = {s.name for s in self.config.servers}
-        for name in [n for n in self._connections if n not in wanted]:
-            self._connections.pop(name).close()
-            self._drop_server(name)
-        self._started = False
+        with self._lock:
+            for name in [n for n in self._connections if n not in wanted]:
+                self._connections.pop(name).close()
+                self._drop_server(name)
+            self._started = False
+            self._new_tools = []
+            self._loaded = False
         self.start()
-        return list(self._new_tools)
+        return self.take_new_tools()
 
     def _sync_all(self) -> list[Tool]:
+        """连 server + 拉工具清单。网络 I/O 不持锁，只在改状态时短暂加锁。"""
         created: list[Tool] = []
-        used: set[str] = set(self._bindings)  # 名字已经占住，新工具不许抢
-        for server in self.config.servers:
-            connection = self._connections.get(server.name)
-            try:
-                if connection is not None and connection.config != server:
-                    # 配置变了（改端口 / 改 header）：原地换配置后重连
-                    connection.config = server
-                    connection.restart()
-                    self._drop_server(server.name)
-                elif connection is None:
-                    connection = MCPConnection(server)
-                    connection.start()
-                elif not connection.alive:
-                    connection.restart()
+        with self._lock:
+            used: set[str] = set(self._bindings)  # 名字已经占住，新工具不许抢
+            servers = list(self.config.servers)
 
+        for server in servers:
+            try:
+                connection = self._ensure_connection(server)
                 remote_tools = connection.list_tools()
             except Exception as exc:
-                if connection is not None and connection not in self._connections.values():
-                    connection.close()
-                self._failed.append((server.name, str(exc)))
+                with self._lock:
+                    self._failed = [item for item in self._failed if item[0] != server.name]
+                    self._failed.append((server.name, str(exc)))
+                    self._connections.pop(server.name, None)
                 continue
 
-            self._connections[server.name] = connection
-            known = {b.remote_name for b in self._bindings.values() if b.server == server.name}
-            for remote in remote_tools:
-                remote_name = str(getattr(remote, "name", "") or "").strip() or "unnamed"
-                if remote_name in known:
-                    continue
-                binding = self._make_binding(server.name, remote, connection, used)
-                self._bindings[binding.exposed_name] = binding
-                tool = Tool(
-                    name=binding.exposed_name,
-                    description=binding.description,
-                    parameters=binding.schema,
-                    handler=self._make_handler(binding),
-                )
-                self._tools.append(tool)
-                created.append(tool)
+            with self._lock:
+                self._connections[server.name] = connection
+                self._failed = [item for item in self._failed if item[0] != server.name]
+                known = {b.remote_name for b in self._bindings.values() if b.server == server.name}
+                for remote in remote_tools:
+                    remote_name = str(getattr(remote, "name", "") or "").strip() or "unnamed"
+                    if remote_name in known:
+                        continue
+                    binding = self._make_binding(server.name, remote, connection, used)
+                    self._bindings[binding.exposed_name] = binding
+                    tool = Tool(
+                        name=binding.exposed_name,
+                        description=binding.description,
+                        parameters=binding.schema,
+                        handler=self._make_handler(binding),
+                    )
+                    self._tools.append(tool)
+                    created.append(tool)
+                    known.add(remote_name)
         return created
 
+    def _ensure_connection(self, server) -> MCPConnection:
+        with self._lock:
+            connection = self._connections.get(server.name)
+        if connection is None:
+            connection = MCPConnection(server)
+            connection.start()
+            return connection
+        if connection.config != server:
+            # 配置变了（改端口 / 改 header）：原地换配置后重连
+            connection.config = server
+            connection.restart()
+            with self._lock:
+                self._drop_server(server.name)
+            return connection
+        if not connection.alive:
+            connection.restart()
+        return connection
+
     def _drop_server(self, server: str) -> None:
-        """丢掉某个 server 的旧绑定与工具（配置变化后重建用）。"""
+        """丢掉某个 server 的旧绑定与工具（配置变化后重建用）。调用方须持锁。"""
         names = [n for n, b in self._bindings.items() if b.server == server]
         for name in names:
             self._bindings.pop(name, None)
@@ -143,34 +231,44 @@ class MCPManager:
         self._tools = [t for t in self._tools if not t.name.startswith(prefix)]
 
     def close(self) -> None:
-        for connection in self._connections.values():
+        with self._lock:
+            connections = list(self._connections.values())
+            self._connections.clear()
+        for connection in connections:
             connection.close()
-        self._connections.clear()
 
     # ---------- 对外状态 ----------
 
     @property
     def tools(self) -> list[Any]:
-        return list(self._tools)
+        with self._lock:
+            return list(self._tools)
 
     @property
     def bindings(self) -> list[MCPToolBinding]:
-        return list(self._bindings.values())
+        with self._lock:
+            return list(self._bindings.values())
 
     @property
     def servers(self) -> list[str]:
-        return list(self._connections)
+        with self._lock:
+            return list(self._connections)
 
     @property
     def server_status(self) -> list[ServerStatus]:
         """按配置顺序给出每个 server 的当前状态。"""
         statuses: list[ServerStatus] = []
-        for server in self.config.servers:
-            connection = self._connections.get(server.name)
-            count = sum(1 for b in self._bindings.values() if b.server == server.name)
+        with self._lock:
+            failures = dict(self._failed)
+            bindings = list(self._bindings.values())
+            connections = dict(self._connections)
+            servers = list(self.config.servers)
+        for server in servers:
+            connection = connections.get(server.name)
+            count = sum(1 for b in bindings if b.server == server.name)
             error = ""
             if connection is None:
-                error = dict(self._failed).get(server.name, "未连接")
+                error = failures.get(server.name, "连接中…" if self._loading else "未连接")
             statuses.append(
                 ServerStatus(
                     name=server.name,
@@ -178,13 +276,15 @@ class MCPManager:
                     connected=connection is not None and connection.alive,
                     tool_count=count,
                     error=error,
+                    loading=self._loading and connection is None,
                 )
             )
         return statuses
 
     @property
     def failed(self) -> list[tuple[str, str]]:
-        return list(self._failed)
+        with self._lock:
+            return list(self._failed)
 
     @property
     def skipped(self) -> list[tuple[str, str]]:
@@ -195,6 +295,8 @@ class MCPManager:
             return "配置错误"
         if not self.config.exists:
             return "未配置"
+        if self._loading:
+            return "连接中…（%d server）" % len(self.config.servers)
         if not self._connections:
             return "无可用 server"
         return "%d server / %d 工具" % (len(self._connections), len(self._bindings))
@@ -268,7 +370,7 @@ class MCPManager:
         except Exception as exc:  # 兜底，任何异常都要变成模型能读懂的文字
             return self._failure(binding, exc)
 
-        ok, text = format_result(result)
+        ok, text = format_result(result, self._result_limit)
         return ToolResult(name=binding.exposed_name, output=text, ok=ok)
 
     def _recover(self, connection: MCPConnection) -> bool:
@@ -293,7 +395,7 @@ class MCPManager:
         )
 
 
-def format_result(result: Any) -> tuple[bool, str]:
+def format_result(result: Any, limit: int = MAX_RESULT_CHARS) -> tuple[bool, str]:
     """把 CallToolResult 转成给模型看的文本 + 成功标志。"""
     parts: list[str] = []
 
@@ -317,8 +419,9 @@ def format_result(result: Any) -> tuple[bool, str]:
 
     if not text:
         text = "（工具没有返回内容）" if not is_error else "（工具返回了空错误）"
-    if len(text) > MAX_RESULT_CHARS:
-        text = text[:MAX_RESULT_CHARS].rstrip() + "\n\n（结果过长，只显示前 %d 字符）" % MAX_RESULT_CHARS
+    limit = max(200, int(limit))
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "\n\n（结果过长，只显示前 %d 字符）" % limit
 
     if is_error:
         return False, "MCP 工具返回错误：\n%s" % text
@@ -384,9 +487,28 @@ def _slug(text: str) -> str:
     return slug or "tool"
 
 
-def create_mcp_manager(root: str | Path) -> MCPManager:
-    """读取配置并连接所有 server；任何失败都只记录，不抛异常。"""
-    manager = MCPManager(load_mcp_config(root))
-    manager.start()
+def create_mcp_manager(
+    root: str | Path,
+    *,
+    async_start: bool = False,
+    call_timeout: float | None = None,
+    connect_timeout: float | None = None,
+    on_ready: Callable[[], None] | None = None,
+    result_limit: int = MAX_RESULT_CHARS,
+) -> MCPManager:
+    """读取配置并连接所有 server；任何失败都只记录，不抛异常。
+
+    `async_start=True` 时不阻塞调用方（TUI 先渲染界面，连上再刷新）。
+    """
+    manager = MCPManager(
+        load_mcp_config(root, call_timeout=call_timeout, connect_timeout=connect_timeout),
+        call_timeout=call_timeout,
+        connect_timeout=connect_timeout,
+    )
+    manager.set_result_limit(result_limit)
     atexit.register(manager.close)
+    if async_start:
+        manager.start_async(on_ready)
+    else:
+        manager.start()
     return manager

@@ -37,10 +37,14 @@ CURL_ERROR_HINTS = {
 }
 
 
-def build_fetch_tool(timeout: float = CURL_TIMEOUT) -> Tool:
-    """构造 fetchweb 工具。"""
+def build_fetch_tool(
+    timeout: float = CURL_TIMEOUT,
+    default_chars: int = 8000,
+    hard_limit: int = 20000,
+) -> Tool:
+    """构造 fetchweb 工具。三个参数都来自 config.ini 的 [tools] 段。"""
 
-    def fetch_web(url: str, max_chars: int = 8000) -> str:
+    def fetch_web(url: str, max_chars: int = default_chars) -> str:
         url = (url or "").strip().strip('"\'')
         if not url:
             raise ToolError("url 不能为空，请提供要抓取的网页地址")
@@ -52,8 +56,8 @@ def build_fetch_tool(timeout: float = CURL_TIMEOUT) -> Tool:
         try:
             max_chars = int(max_chars)
         except (TypeError, ValueError):
-            max_chars = 8000
-        max_chars = max(500, min(max_chars, 20000))
+            max_chars = default_chars
+        max_chars = max(500, min(max_chars, hard_limit))
 
         html = _curl_get(url, timeout)
         if len(html.strip()) < 80:
@@ -92,8 +96,8 @@ def build_fetch_tool(timeout: float = CURL_TIMEOUT) -> Tool:
                 "max_chars": {
                     "type": "integer",
                     "description": (
-                        "返回正文的最大字符数（500-20000），默认 8000，"
-                        "超长会截断，可按需调大"
+                        "返回正文的最大字符数（500-%d），默认 %d，"
+                        "超长会截断，可按需调大" % (hard_limit, default_chars)
                     ),
                 },
             },

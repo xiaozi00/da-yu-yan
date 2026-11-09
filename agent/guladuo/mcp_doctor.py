@@ -90,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n%s\n  连接成功，%d 个工具" % (head, status.tool_count))
             else:
                 print("\n%s\n  连接失败：%s" % (head, status.error))
-                if "端口" not in status.error:
+                # 已经拿到 HTTP 状态码（URL 过期 / 401 / 404 之类）就不必再探端口，那是另一类问题
+                if "端口" not in status.error and "HTTP " not in status.error:
                     print("  端口探测：%s" % _port_state(status.url))
                 continue
 

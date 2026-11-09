@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import socket
 import threading
 from contextlib import AsyncExitStack, suppress
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import LATEST_PROTOCOL_VERSION
 from mcp.types import Tool as MCPTool
 
 from ..errors import MCPConnectionLost, MCPError
@@ -53,7 +55,35 @@ class MCPConnection:
     # ---------- 生命周期 ----------
 
     def start(self) -> None:
-        """建立连接并握手，阻塞直到就绪或超时。"""
+        """建立连接并握手，阻塞直到就绪或超时。
+
+        托管平台（ModelScope 等）偶发对合法请求返回 410/5xx，隔几秒重试即恢复，
+        所以「server 有响应但拒绝握手」这类错误（`_needs_probe` 判定）会自动重试一次；
+        连不上端口、超时之类的不重试，避免双倍等待。
+        """
+        last_error: BaseException | None = None
+        for attempt in range(2):
+            self._spawn()
+            if not self._ready.wait(self.config.connect_timeout + _READY_GRACE):
+                self.close()
+                raise MCPConnectionLost(
+                    "连接超时（>%.0f 秒），server 可能没启动或还在预热"
+                    % (self.config.connect_timeout + _READY_GRACE)
+                )
+            if self._error is None:
+                return
+            last_error = self._error
+            self.close()
+            if attempt == 0 and _needs_probe(last_error):
+                self._ready = threading.Event()
+                self._error = None
+                self._stop_event = None
+                continue
+            break
+        assert last_error is not None
+        raise MCPConnectionLost(self._explain_failure(last_error))
+
+    def _spawn(self) -> None:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -61,15 +91,6 @@ class MCPConnection:
             daemon=True,
         )
         self._thread.start()
-
-        if not self._ready.wait(self.config.connect_timeout + _READY_GRACE):
-            self.close()
-            raise MCPConnectionLost(
-                "连接超时（>%.0f 秒），server 可能没启动或还在预热"
-                % (self.config.connect_timeout + _READY_GRACE)
-            )
-        if self._error is not None:
-            raise MCPConnectionLost(_with_port_hint(self.config.url, self._error))
 
     def close(self) -> None:
         if self._loop is not None and self._stop_event is not None:
@@ -183,6 +204,50 @@ class MCPConnection:
             return "连接已断开：%s" % _describe(self._error)
         return "连接未建立"
 
+    # ---------- 失败诊断 ----------
+
+    def _explain_failure(self, exc: BaseException) -> str:
+        """握手失败时给出「为什么」，而不是笼统的错误码。
+
+        MCP SDK 收到非 2xx 响应只会抛 -32603「Server returned an error response」，
+        真实原因（URL 过期 / 需要鉴权 / 路径不对）全被吞掉。这里在失败后补打一次
+        请求，把 HTTP 状态码翻译成可执行的建议 —— 只在失败路径发生，不影响正常连接。
+        """
+        detail = _describe(exc)
+        if _needs_probe(exc):
+            hint = self._probe_endpoint()
+            if hint:
+                return "%s；%s" % (detail, hint)
+        return _with_port_hint(self.config.url, exc)
+
+    def _probe_endpoint(self) -> str:
+        """主动请求一次 initialize，返回可读的 HTTP 状态说明；失败则返回空串。"""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        headers.update(self.config.headers or {})
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "guladuo-probe", "version": "1"},
+            },
+        }
+        try:
+            with httpx2.Client(
+                timeout=min(self.config.connect_timeout, 8.0),
+                trust_env=not is_loopback_url(self.config.url),
+                follow_redirects=True,
+            ) as client:
+                response = client.post(self.config.url, json=payload, headers=headers)
+        except Exception:
+            return ""  # 探测本身失败就退回原提示，不覆盖真正的失败原因
+        return _explain_status(response)
+
 
 def _make_http_client(config: MCPServerConfig, timeout: httpx2.Timeout) -> httpx2.AsyncClient:
     """建 HTTP 客户端。
@@ -253,6 +318,67 @@ def _probe_port(url: str) -> str:
         return "端口 %d 连不上，确认 MCP Server 已启动、地址和端口没写错" % port
 
 
+def _needs_probe(exc: BaseException) -> bool:
+    """「server 返回了错误响应」这类最含糊，值得再打一次请求拿状态码。"""
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        return any(_needs_probe(inner) for inner in exc.exceptions)
+    if getattr(exc, "code", None) == -32603:
+        return True
+    text = str(getattr(exc, "message", "") or exc).lower()
+    return "error response" in text or "bad request" in text
+
+
+def _explain_status(response: Any) -> str:
+    """把 HTTP 状态码翻译成「问题在哪、下一步做什么」。"""
+    code = int(getattr(response, "status_code", 0) or 0)
+    server_msg = _extract_error_message(response)
+    suffix = "（服务端说明：%s）" % server_msg if server_msg else ""
+
+    if 200 <= code < 300:
+        return "端点返回 HTTP %d 但 MCP 握手没完成，确认该地址是 Streamable HTTP 端点（不是普通网页）%s" % (
+            code,
+            suffix,
+        )
+    if code == 401:
+        return "HTTP 401 需要鉴权：在 .mcp.json 的该 server 下加 headers，如 Authorization: Bearer ${TOKEN}%s" % suffix
+    if code == 403:
+        return "HTTP 403 访问被拒绝，凭据可能已失效或没有该服务权限%s" % suffix
+    if code == 404:
+        return "HTTP 404 路径不存在：核对 URL 末尾是否该带 /mcp 之类的后缀%s" % suffix
+    if code == 405:
+        return "HTTP 405 该地址不接受 POST，可能是 SSE 端点而非 Streamable HTTP%s" % suffix
+    if code == 410:
+        return "HTTP 410 该地址已失效（托管平台会定期回收链接），需要重新获取新的 URL%s" % suffix
+    if code == 429:
+        return "HTTP 429 请求被限流或额度用尽，稍后重试或检查账号配额%s" % suffix
+    if 500 <= code < 600:
+        return "HTTP %d 服务端内部错误（是 server 自己报错，与本地配置无关）%s" % (code, suffix)
+    return "HTTP %d%s" % (code, suffix)
+
+
+def _extract_error_message(response: Any, limit: int = 160) -> str:
+    """从响应体里挖出服务端自己的错误说明（兼容 JSON / SSE / 纯文本）。"""
+    text = ""
+    try:
+        data = response.json()
+    except Exception:
+        text = getattr(response, "text", "") or ""
+    else:
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                text = str(error.get("message") or error.get("msg") or "")
+            elif isinstance(error, str):
+                text = error
+            if not text:
+                text = str(data.get("message") or "")
+            if not text:
+                text = json.dumps(data, ensure_ascii=False)
+        else:
+            text = str(data)
+    return " ".join(text.split())[:limit]
+
+
 def _describe(exc: BaseException) -> str:
     """把 SDK 的异常压成一句用户能看懂的中文。"""
     if isinstance(exc, BaseExceptionGroup):  # anyio task group 会包一层
@@ -270,7 +396,8 @@ def _describe(exc: BaseException) -> str:
     if code is not None and message:
         text = "MCP 错误码 %s：%s" % (code, message)
         if code == -32603:
-            text += "（常见原因：服务未启动、地址/端口写错，或该 URL 不是 MCP 端点）"
+            # 这句由 _explain_failure 去探测真实 HTTP 状态，不在这里瞎猜原因
+            text += "（MCP server 返回了错误响应）"
         elif code == -32601:
             text += "（服务器不支持该操作）"
         return text

@@ -59,6 +59,44 @@ class AgentFailed:
     message: str
 
 
+@dataclass(frozen=True)
+class ContextUsageChanged:
+    """上下文用量变化（每次模型调用结束、压缩完成时都会发一次）。"""
+
+    tokens: int
+    window: int
+    ratio: float
+    source: str  # "api"（模型给的 usage）或 "estimate"（本地估算）
+    default_window: bool  # 窗口大小是不是「默认 128k」兜底
+    needs_compact: bool  # 已超过告警阈值，需先 /compact
+
+
+@dataclass(frozen=True)
+class CompactStarted:
+    """上下文压缩开始，archive_id 是本轮归档编号。"""
+
+    archive_id: str
+    tokens: int
+
+
+@dataclass(frozen=True)
+class CompactFinished:
+    """压缩成功：历史已被摘要替换。"""
+
+    archive_id: str
+    path: str
+    messages: int
+    before_tokens: int
+    after_tokens: int
+
+
+@dataclass(frozen=True)
+class CompactFailed:
+    """压缩失败：原上下文保持不变。"""
+
+    message: str
+
+
 AgentEvent = Union[
     TurnStarted,
     TextDelta,
@@ -66,4 +104,8 @@ AgentEvent = Union[
     ToolCallFinished,
     TurnFinished,
     AgentFailed,
+    ContextUsageChanged,
+    CompactStarted,
+    CompactFinished,
+    CompactFailed,
 ]
